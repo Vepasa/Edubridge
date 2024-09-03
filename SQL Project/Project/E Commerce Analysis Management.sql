@@ -1,0 +1,257 @@
+USE edubridge_sql1;
+-- Section 1: Data Preparation and Understanding
+
+-- 1. What is the total number of rows in each of the 3 tables in the database?
+-- ANS:
+SELECT COUNT(*) FROM customers_new;
+SELECT COUNT(*) FROM prod_cat_info;
+SELECT COUNT(*) FROM transactions_new;
+
+-- 2. What is the total number of transactions that have a return?
+-- ANS: 
+SELECT COUNT(*) FROM transactions_new WHERE Qty < 0; 
+
+-- 3.The dates provided across the datasets are not in a correct format. Pls convert the date variables into valid date formats before proceeding ahead.
+-- ANS: 
+ UPDATE transactions_new 
+SET tran_date = STR_TO_DATE(tran_date , '%d-%m-%Y')
+WHERE tran_date IS NOT NULL;
+
+alter table transactions_new change column tran_date tran_date  date not null;
+
+ UPDATE Customers_new 
+SET DOB = STR_TO_DATE(DOB , '%d-%m-%Y')
+WHERE DOB  IS NOT NULL;
+
+alter table Customers_new change column DOB DOB  date not null;
+
+-- 4. What is the time range of the transaction data available for analysis? Show the output in number of days, months and years simultaneously in different columns.
+-- ANS:
+
+SELECT TIMESTAMPDIFF(DAY, MIN(tran_date), MAX(tran_date)) AS Range_Day, 
+TIMESTAMPDIFF(MONTH, MIN(tran_date), MAX(tran_date)) AS Range_Month,
+TIMESTAMPDIFF(YEAR, MIN(tran_date), MAX(tran_date)) AS Range_Year 
+FROM transactions_new; 
+
+
+--    5. Which product category does the sub-category "DIY" belong to?
+-- ANS: 
+SELECT prod_cat FROM prod_cat_info
+WHERE prod_subcat='DIY'; 
+
+-- Section 2: Data Analysis
+
+-- 1. Which channel is most frequently used for transactions?
+-- ANS:
+SELECT Store_type, COUNT(*) AS No_orders FROM transactions_new
+GROUP BY Store_type
+ORDER BY COUNT(*)  DESC
+LIMIT 1;
+
+-- 2. What is the count of Male and Female customers in the database?
+SELECT Gender, COUNT(*) AS No_Cust FROM customers_new
+WHERE Gender <> ''
+GROUP BY Gender;
+
+ -- 3. From which city do we have the maximum number of customers and how many?
+ SELECT city_code, COUNT(DISTINCT customer_Id) AS No_Cust 
+ FROM customers_new
+ GROUP BY city_code
+ ORDER BY COUNT(DISTINCT customer_Id) DESC
+ LIMIT 1;
+
+   
+-- 4.How many sub-categories are there under the Books category?
+
+SELECT prod_cat, COUNT(DISTINCT prod_subcat) AS SUB_CAT FROM prod_cat_info
+WHERE prod_cat='Books';
+
+
+-- 5. What is the maximum quantity of products ever ordered?
+SELECT MAX(Qty) AS MAX_QTY FROM transactions_new; 
+
+--   6. What is the net total revenue generated in categories Electronics and Books?
+
+SELECT prod_cat_info.prod_cat, SUM(transactions_new.total_amt) AS Total_Revenue FROM transactions_new JOIN prod_cat_info ON prod_cat_info.prod_cat_code=transactions_new.prod_cat_code
+WHERE prod_cat_info.prod_cat='Electronics' OR  prod_cat_info.prod_cat='Books'
+GROUP BY prod_cat_info.prod_cat;
+
+
+-- 	7. How many customers have >10 transactions with us, excluding returns?
+SELECT COUNT(cust_id) FROM 
+( SELECT cust_id, COUNT(transaction_id) AS NO_TR FROM transactions_new
+WHERE total_amt > 0
+GROUP BY cust_id HAVING COUNT(transaction_id) >10) AS NO_CUST; 
+
+-- 8. What is the combined revenue earned from the "Electronics" & "Clothing" categories, from "Flagship stores"?
+
+SELECT TR.Store_type, SUM(TR.total_amt) AS TOT_REVENUE FROM transactions_new TR
+LEFT JOIN prod_cat_info PC 
+ON TR.prod_cat_code=PC.prod_cat_code
+WHERE PC.prod_cat='Electronics' OR PC.prod_cat='Clothing'
+GROUP BY TR.Store_type HAVING TR.Store_type='Flagship store';
+
+-- 9. What is the total revenue generated from "Male" customers in "Electronics" category? Output should display total revenue by prod sub-cat.
+
+SELECT SUM(transactions_new.total_amt), prod_cat_info.prod_subcat FROM transactions_new JOIN prod_cat_info ON transactions_new.prod_cat_code=prod_cat_info.prod_cat_code JOIN  customers_new ON customers_new.customer_Id=transactions_new.cust_id
+WHERE Gender='M' AND prod_cat='Electronics'
+GROUP BY prod_subcat;
+
+-- 10. What is percentage of sales and returns by product sub category; display only top 5 sub categories in terms of sales?
+
+WITH SubcategorySales AS (
+    SELECT 
+        t.prod_subcat_code,
+        p.prod_subcat,
+        SUM(t.total_amt) AS total_sales,
+        SUM(CASE WHEN t.Qty < 0 THEN t.total_amt ELSE 0 END) AS total_returns
+    FROM 
+        Transactions_new t
+    JOIN 
+       prod_cat_info  p ON t.prod_subcat_code = p.prod_sub_cat_code
+    GROUP BY 
+        t.prod_subcat_code, p.prod_subcat
+),
+TopSubcategories AS (
+    SELECT 
+        prod_subcat,
+        total_sales,
+        total_returns,
+        RANK() OVER (ORDER BY total_sales DESC) AS sales_rank,
+        (total_sales / SUM(total_sales) OVER ()) * 100 AS sales_percentage,
+        (total_returns / SUM(total_returns) OVER ()) * 100 AS returns_percentage
+    FROM 
+        SubcategorySales
+)
+SELECT 
+    prod_subcat,
+    total_sales,
+    sales_percentage,
+    total_returns,
+    returns_percentage
+FROM 
+    TopSubcategories
+WHERE 
+    sales_rank <= 5;
+
+--    11. For all customers aged between 25 to 35 years find what is the net total revenue generated by these consumers in last 30 days of transactions from max transaction date available in the data?
+
+  WITH max_tran_date AS (
+    SELECT MAX(tran_date) AS max_date
+    FROM Transactions_new
+),
+last_30days_sales AS (
+    SELECT t.cust_id, t.tran_date, t.total_amt, m.max_date
+    FROM Transactions_new t
+    CROSS JOIN max_tran_date m
+    WHERE t.tran_date BETWEEN DATE_SUB(m.max_date, INTERVAL 30 DAY) AND m.max_date
+),
+
+age_btwn_2530 AS (
+    SELECT c.customer_Id, YEAR(m.max_date) - YEAR(c.DOB) AS age
+    FROM Customers_new  c
+    CROSS JOIN max_tran_date m
+    WHERE YEAR(m.max_date) - YEAR(c.DOB) BETWEEN 25 AND 35
+),
+
+net_rev AS (
+    SELECT SUM(t.total_amt) AS net_total_revenue
+    FROM last_30days_sales t
+    JOIN age_btwn_2530 e ON t.cust_id = e.customer_Id
+)
+
+SELECT net_total_revenue
+FROM net_rev;
+
+
+-- 12. Which product category has seen the max value of returns in the last 3 months of transactions?
+
+WITH MaxTranDate AS (
+    SELECT MAX(tran_date) AS max_date
+    FROM Transactions_new
+),
+
+Last90DaysReturns AS (
+    SELECT 
+        SUM(CASE WHEN tn.total_amt < 0 THEN tn.total_amt ELSE 0 END) AS return_amount,
+        pci.prod_cat
+    FROM 
+        Transactions_new tn
+    JOIN 
+        MaxTranDate m ON tn.tran_date BETWEEN DATE_SUB(m.max_date, INTERVAL 90 DAY) AND m.max_date
+    LEFT JOIN 
+        prod_cat_info pci ON tn.prod_subcat_code = pci.prod_sub_cat_code 
+                          AND tn.prod_cat_code = pci.prod_cat_code 
+    GROUP BY 
+        pci.prod_cat
+)
+
+SELECT 
+    prod_cat,
+    return_amount
+FROM 
+    Last90DaysReturns
+ORDER BY 
+    return_amount
+LIMIT 1;
+
+
+-- 13. Which store-type sells the maximum products; by value of sales amount and by quantity sold?
+
+SELECT 
+    Store_type, 
+    SUM(total_amt) AS total_amt, 
+    SUM(Qty) AS total_qty
+FROM 
+    Transactions_new 
+GROUP BY 
+    Store_type 
+ORDER BY 
+    SUM(total_amt) DESC, 
+    SUM(Qty) DESC
+LIMIT 1;
+
+
+--  14. What are the categories for which average revenue is above the overall average.
+
+SELECT 
+    p.prod_cat,
+    AVG(t.total_amt) AS avg_cat_rev
+FROM  
+    Transactions_new t
+JOIN 
+    prod_cat_info p ON t.prod_cat_code = p.prod_cat_code
+GROUP BY 
+    p.prod_cat
+HAVING 
+    AVG(t.total_amt) > (SELECT AVG(total_amt) FROM Transactions_new);
+
+
+--   15. Find the average and total revenue by each subcategory for the categories
+--  which are among top 5 categories in terms of quantity sold.
+   
+    WITH TopCategories AS (
+    SELECT 
+        prod_cat_code ,
+        SUM(Qty) AS total_quantity_sold
+    FROM  
+        Transactions_new
+    GROUP BY 
+        prod_cat_code
+    ORDER BY 
+        total_quantity_sold DESC
+    LIMIT 5
+)
+
+SELECT 
+    p.prod_cat,
+    AVG(t.total_amt) AS avg_revenue,
+    SUM(t.total_amt) AS total_revenue
+FROM  
+    Transactions_new t
+JOIN 
+    prod_cat_info p ON t.prod_cat_code = p.prod_cat_code
+JOIN 
+    TopCategories tc ON t.prod_cat_code  = tc.prod_cat_code
+GROUP BY 
+   p.prod_cat  ;
